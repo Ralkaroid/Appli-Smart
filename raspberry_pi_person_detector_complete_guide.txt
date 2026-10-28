@@ -1,0 +1,445 @@
+RASPBERRY PI ZERO 2 W PERSON DETECTION + GPIO OCCUPANCY CONTROL Complete
+Start-from-Scratch Guide
+================================================================
+
+PURPOSE
+
+This guide documents the person-detection project built with: -
+Raspberry Pi Zero 2 W - IMX219 camera - Quantized MobileNet SSD v1 COCO
+model in TensorFlow Lite format - Python, Picamera2, OpenCV, NumPy,
+Flask, gpiozero - Live web dashboard - GPIO17 output: HIGH when a person
+is detected; LOW after an absence delay
+
+This guide is based on the project setup and troubleshooting discussed.
+IP addresses can change, so always check the current address on your Pi.
+
+1. PATHS AND NETWORK DETAILS
+
+Raspberry Pi username used: pi0 Raspberry Pi hostname used: raspi0
+
+Project directory: /home/pi0/person_detector Short form:
+~/person_detector
+
+Application: /home/pi0/person_detector/app.py
+
+Model directory: /home/pi0/person_detector/models/
+
+Expected model file: /home/pi0/person_detector/models/detect.tflite
+
+Python virtual environment: /home/pi0/person_detector/.venv
+
+Other project files: /home/pi0/person_detector/README.md
+/home/pi0/person_detector/requirements.txt
+/home/pi0/person_detector/test_model.py
+
+Example Pi IP used during testing: 10.112.9.179 Example Windows laptop
+IP used during testing: 10.112.9.35
+
+These IP addresses may no longer be current. On the Pi, run: hostname -I
+
+The Pi was running Raspberry Pi OS and Python 3.11.2 during the setup.
+Check your own versions using: python3 –version cat /etc/os-release
+uname -a
+
+2. HOW THE PROJECT WORKS
+
+1.  Picamera2 captures frames from the IMX219 camera.
+2.  Frames are resized to 300 x 300 pixels for model inference.
+3.  TensorFlow Lite runs a quantized MobileNet SSD model.
+4.  The model returns detection boxes, class IDs, and confidence scores.
+5.  The code considers class ID 0 to be a person for this model.
+6.  If person confidence is at least 0.50, GPIO17 becomes HIGH.
+7.  If no person is detected for 3 seconds, GPIO17 becomes LOW.
+8.  Flask streams annotated video and provides a JSON status endpoint.
+9.  A browser dashboard displays video, detection status, GPIO state,
+    confidence, inference time, FPS, and errors.
+
+This is visual detection, not guaranteed occupancy sensing. A person
+outside the camera’s field of view, hidden behind an object, or missed
+in poor lighting may be treated as absent.
+
+3. HARDWARE AND SAFETY
+
+Required: - Raspberry Pi Zero 2 W - IMX219 camera module and compatible
+ribbon cable - microSD card with Raspberry Pi OS - Stable power supply
+and cable - Network access
+
+Optional: - Suitable relay module or transistor driver - External load
+such as a light or indicator
+
+GPIO17 is BCM GPIO17 and physical header pin 11. Physical pin 6 is a GND
+pin. GPIO HIGH is approximately 3.3 V and LOW is approximately 0 V.
+
+SAFETY: - Never apply 5 V to a GPIO pin. - Never connect a relay coil or
+high-current load directly to GPIO17. - Use a compatible relay module or
+transistor driver and suitable supply. - Choose external hardware with a
+safe default state. - If the Pi loses power, software cannot guarantee
+the external load state.
+
+4. INSTALL RASPBERRY PI OS AND CHECK THE SYSTEM
+
+Install Raspberry Pi OS, boot the Pi, connect it to a network, and
+enable SSH if remote terminal access is needed.
+
+Run on the Pi: whoami hostname hostname -I python3 –version uname -a cat
+/etc/os-release
+
+Check the camera: rpicam-hello –timeout 5000
+
+Stop the camera test before running the application. On a headless SSH
+connection, a preview may not be visible, but error messages can still
+help.
+
+5. INSTALL SYSTEM DEPENDENCIES
+
+Run on the Pi: sudo apt update sudo apt upgrade -y
+
+Install required packages: sudo apt install -y python3 python3-pip
+python3-venv
+python3-picamera2 python3-opencv python3-numpy
+python3-gpiozero unzip wget
+
+These provide Python, camera support, OpenCV, NumPy, GPIO control, and
+utilities for downloading and extracting the model.
+
+6. CREATE THE PROJECT AND VIRTUAL ENVIRONMENT
+
+Run: mkdir -p ~/person_detector/models cd ~/person_detector
+
+Create a virtual environment that can access system-installed camera and
+GPIO libraries: python3 -m venv –system-site-packages .venv source
+.venv/bin/activate python -m pip install –upgrade pip
+
+Install pip dependencies: pip install flask tflite-runtime
+
+Activate the environment each time before running the app: cd
+~/person_detector source .venv/bin/activate
+
+Exit it with: deactivate
+
+TensorFlow Lite Runtime wheels depend on Python version and CPU
+architecture. If installation fails, check: python3 –version python3 -c
+“import platform; print(platform.machine())” python -m pip show
+tflite-runtime
+
+Do not install a wheel built for a different architecture or Python
+version. This project does not require the full tensorflow package.
+
+7. DOWNLOAD THE PRETRAINED MOBILENET SSD MODEL
+
+The project uses the quantized MobileNet SSD v1 model trained on COCO.
+It is pretrained; no training is required.
+
+Run: cd ~/person_detector/models wget
+https://storage.googleapis.com/download.tensorflow.org/models/tflite/coco_ssd_mobilenet_v1_1.0_quant_2018_06_29.zip
+unzip coco_ssd_mobilenet_v1_1.0_quant_2018_06_29.zip
+
+Verify: ls -lh ~/person_detector/models/detect.tflite
+
+Expected model path: ~/person_detector/models/detect.tflite
+
+If extraction places the model elsewhere, move it into the models
+directory and ensure the name is exactly detect.tflite.
+
+Model assumptions: - Input shape: [1, 300, 300, 3] - The downloaded
+quantized model generally uses uint8 input - Standard SSD outputs:
+boxes, classes, scores, and optionally count - Person class ID is 0 for
+this model
+
+Check model licensing and redistribution terms before committing weights
+to a public GitHub repository. If unsure, leave the model out of Git and
+keep the download instructions in the README.
+
+8. VERIFY PYTHON LIBRARIES
+
+Activate the environment: cd ~/person_detector source .venv/bin/activate
+
+Check TensorFlow Lite Runtime: python -c “import
+tflite_runtime.interpreter as tflite; print(‘TensorFlow Lite Runtime
+OK’)”
+
+Check other dependencies: python -c “import cv2, numpy, flask, gpiozero;
+from picamera2 import Picamera2; print(‘All project libraries OK’)”
+
+If imports fail: - Confirm the virtual environment is active. - Confirm
+the apt packages were installed. - Check compatibility with the current
+Python version and CPU architecture.
+
+9. TEST THE MODEL
+
+Create test_model.py: cd ~/person_detector nano test_model.py
+
+Paste this code:
+
+    from pathlib import Path
+    from tflite_runtime.interpreter import Interpreter
+
+    model_path = Path("models/detect.tflite")
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model not found: {model_path}")
+
+    interpreter = Interpreter(
+        model_path=str(model_path),
+        num_threads=2
+    )
+    interpreter.allocate_tensors()
+
+    print("Model loaded successfully")
+    print("Input details:", interpreter.get_input_details())
+    print("Output details:", interpreter.get_output_details())
+
+Save in nano using Ctrl+O, Enter, Ctrl+X.
+
+Run: source .venv/bin/activate python test_model.py
+
+Confirm that the model loads and input shape is [1, 300, 300, 3]. This
+test verifies model loading, not detection accuracy.
+
+10. APPLICATION FILE: app.py
+
+Create the file: cd ~/person_detector nano app.py
+
+Paste the complete working application code from the project README’s
+“Complete Application: app.py” section or from the original
+implementation message in this conversation. That application
+includes: - Flask dashboard - Picamera2 camera capture - TensorFlow Lite
+inference - Person bounding boxes - GPIO17 output control - Three-second
+absence delay - /status and /video_feed endpoints - Camera cleanup and
+GPIO LOW on detector worker exit
+
+Important application settings: THRESHOLD = 0.50 CAMERA_WIDTH = 320
+CAMERA_HEIGHT = 240 NUM_THREADS = 2 TARGET_INFERENCE_FPS = 4.0
+JPEG_QUALITY = 55 PERSON_PIN = 17 NO_PERSON_DELAY = 3.0 WEB_PORT = 5000
+
+The code assumes the downloaded quantized MobileNet SSD model and its
+standard SSD output order. If a different model is substituted, verify
+its input preprocessing, output tensors, and person class ID.
+
+11. REQUIREMENTS AND GITIGNORE
+
+Create requirements.txt: cd ~/person_detector nano requirements.txt
+
+Contents: Flask tflite-runtime
+
+Picamera2, OpenCV, NumPy, and gpiozero are installed through apt in this
+guide, so they are not listed in the pip requirements file.
+
+Create .gitignore: nano .gitignore
+
+Contents: .venv/ pycache/ *.py[cod] .env
+
+Do not commit the virtual environment or private credentials.
+
+12. RUN THE APPLICATION
+
+Run on the Pi: cd ~/person_detector source .venv/bin/activate python -u
+app.py
+
+Find the current IP address: hostname -I
+
+Open the dashboard from a device on the same network: http://:5000
+
+Example IP used during the project: http://10.112.9.179:5000
+
+Use the current IP if it has changed.
+
+Endpoints: / Web dashboard /video_feed Live MJPEG video stream /status
+JSON detection and GPIO status
+
+Example JSON: { “person_detected”: true, “confidence”: 0.63,
+“inference_ms”: 182.0, “fps”: 4.0, “gpio17”: “HIGH”, “error”: “” }
+
+Those values are examples, not guaranteed performance.
+
+Stop the app with Ctrl+C in the terminal running it.
+
+13. TEST GPIO17 SAFELY
+
+Stop app.py before running a standalone GPIO test, so only one process
+controls GPIO17.
+
+Run: python -c “from gpiozero import DigitalOutputDevice; import time;
+p=DigitalOutputDevice(17); p.on(); print(‘GPIO17 HIGH’); time.sleep(3);
+p.off(); print(‘GPIO17 LOW’); p.close()”
+
+The output should be HIGH for about three seconds and then LOW. Verify
+with a multimeter or suitable logic indicator. Do not attach an
+unprotected relay coil or high-current load directly.
+
+14. TROUBLESHOOTING: PROBLEMS AND SOLUTIONS
+
+A. TensorFlow Lite Runtime import failure Symptoms: ImportError
+importing tflite_runtime.interpreter. Checks: python3 –version python3
+-c “import platform; print(platform.machine())” source
+~/person_detector/.venv/bin/activate python -m pip show tflite-runtime
+Solution: - Confirm the virtual environment is active. - Confirm Python
+and CPU architecture compatibility. - Install a compatible
+tflite-runtime package. - Do not install a wheel for another
+architecture. - The full TensorFlow package is not needed.
+
+B. Model file not found Check: ls -lh
+~/person_detector/models/detect.tflite Solution: download/extract the
+model again and put it at that exact path.
+
+C. Camera busy Example: RuntimeError: Failed to acquire camera: Device
+or resource busy Solution: - Stop rpicam-hello, rpicam-vid, and other
+camera scripts. - Run only one camera application at a time. - Stop old
+detector processes before restarting app.py.
+
+D. GPIO busy Solution: - Stop the old GPIO test or app that controls
+GPIO17. - Do not run a standalone GPIO test while app.py is running. -
+Identify a process before stopping it; do not kill unrelated Python
+jobs.
+
+E. Browser reports connection refused Possible causes: app.py is not
+running, IP address changed, server crashed, or network communication is
+blocked. On Pi: hostname -I cd ~/person_detector source
+.venv/bin/activate python -u app.py From Windows CMD: ping Then open:
+http://:5000 The server must be running while the browser connects.
+
+F. Unexpected restarts or instability During this project, interruptions
+occurred while the hardware was moved. The setup became stable after
+securing the power connection, suggesting a physical power/cable issue,
+although this does not prove every crash has the same cause.
+Recommendations: - Use a stable, correctly rated power supply and
+cable. - Secure the USB power connector. - Secure the camera ribbon. -
+Check logs if the problem returns. A check used during troubleshooting:
+vcgencmd get_throttled A result observed at one point was: throttled=0x0
+That result only reflects the reported state at that time; it does not
+rule out every intermittent power issue.
+
+G. GPIO stays LOW while a person is visible Possible causes: confidence
+below threshold, poor lighting, occlusion, incorrect framing, or a model
+output/class mismatch. Actions: - Check the live dashboard and
+confidence. - Run test_model.py. - Improve camera framing and
+lighting. - If needed, cautiously test a lower THRESHOLD, such as 0.40.
+
+H. GPIO goes LOW while someone is still in the room The model can miss a
+person due to lighting or occlusion. Increase: NO_PERSON_DELAY = 3.0 For
+example, use 5.0 or 10.0 seconds. This reduces switching during short
+detection gaps but does not guarantee room occupancy detection.
+
+I. Video/inference is slow Settings used to reduce load: CAMERA_WIDTH =
+320 CAMERA_HEIGHT = 240 NUM_THREADS = 2 TARGET_INFERENCE_FPS = 4.0
+JPEG_QUALITY = 55 Change one setting at a time and measure results.
+Higher resolution and higher inference rates increase processing load.
+
+J. Windows SCP says “No such file or directory” Windows CMD initially
+parsed a quoted destination containing backslashes incorrectly. The
+destination folder already existed. Use forward slashes in the quoted
+SCP destination path as shown in the next section. Also check that the
+remote files really exist.
+
+15. COPY FILES FROM PI TO WINDOWS LAPTOP
+
+Use Windows CMD and SCP over SSH. On the Pi, find the current address:
+hostname -I
+
+Create the local folder in Windows CMD: mkdir “%USERPROFILE%_detector”
+
+If it already exists, that is fine.
+
+Example IP from the project: 10.112.9.179. Replace it if changed.
+
+Copy app.py: scp pi0@10.112.9.179:/home/pi0/person_detector/app.py
+“%USERPROFILE%/Desktop/person_detector/”
+
+Copy README.md: scp pi0@10.112.9.179:/home/pi0/person_detector/README.md
+“%USERPROFILE%/Desktop/person_detector/”
+
+Copy requirements.txt: scp
+pi0@10.112.9.179:/home/pi0/person_detector/requirements.txt
+“%USERPROFILE%/Desktop/person_detector/”
+
+Copy model folder: scp -r
+pi0@10.112.9.179:/home/pi0/person_detector/models
+“%USERPROFILE%/Desktop/person_detector/”
+
+Verify: dir “%USERPROFILE%_detector”
+
+If README.md or requirements.txt does not exist on the Pi yet, that copy
+command will fail. Check remote files on the Pi: ls -l
+~/person_detector/app.py ~/person_detector/README.md
+~/person_detector/requirements.txt
+
+Copy the whole project: scp -r
+pi0@10.112.9.179:/home/pi0/person_detector “%USERPROFILE%/Desktop/”
+
+This also copies .venv, which is generally unnecessary and is not
+portable to Windows. Prefer copying the required source files and model
+only.
+
+Alternative: WinSCP - Install WinSCP on Windows. - Select SFTP. - Enter
+the Pi IP, username pi0, and Pi password. - Browse to
+/home/pi0/person_detector/. - Drag files to the Windows Desktop.
+
+16. GITHUB REPOSITORY
+
+Suggested structure: person_detector/ ├── app.py ├── README.md ├──
+requirements.txt ├── test_model.py ├── .gitignore └── models/ └──
+detect.tflite
+
+Do not commit .venv. Check model licensing before committing
+detect.tflite. If redistribution is not allowed or unclear, omit the
+model weights and keep the download instructions in README.md.
+
+Before publishing: 1. Test setup on a fresh installation. 2. Confirm the
+model download and extraction paths. 3. Remove credentials and private
+network details. 4. Replace example IPs with in public documentation. 5.
+Add dashboard/hardware screenshots if useful. 6. Select a project
+license. The project license does not override the model’s own license.
+
+17. SECURITY AND REMOTE ACCESS
+
+The Flask development server is intended for local testing. Do not
+expose port 5000 directly to the public internet. For remote access, use
+a secure deployment approach with HTTPS and access controls, such as a
+properly configured reverse proxy or secure tunnel. Protect the camera
+feed and never publish credentials or private camera URLs in GitHub.
+
+18. PERFORMANCE NOTES
+
+An earlier status reading during testing was approximately: -
+Confidence: 0.63 - Inference time: 182 ms - FPS: 5.3
+
+These are historical readings, not guaranteed results.
+
+The optimized configuration used: - 320 x 240 camera frames - Two
+inference threads - Target inference rate of 4 FPS - JPEG quality 55 -
+Dashboard status polling every 1.5 seconds - MJPEG streaming that waits
+for a new frame instead of repeatedly sending the same frame
+
+These settings aim to reduce CPU and network load on the Pi Zero 2 W.
+
+19. LIMITATIONS AND FUTURE IMPROVEMENTS
+
+Limitations: - Detection is limited to the camera field of view. - Poor
+lighting and occlusion can cause missed detections. - GPIO behavior
+depends on confidence and absence delay. - This is not a certified
+security or safety system. - Software cannot control GPIO state during a
+full power loss. - Flask development server is not for public production
+deployment.
+
+Future improvements: - Dashboard controls for confidence threshold and
+absence delay. - Manual GPIO override. - Occupancy event logging. -
+Person tracking or temporal filtering. - Evaluation of more efficient
+detection models. - Authenticated HTTPS remote viewing. - Proper relay
+driver and hardware-level fail-safe design.
+
+20. REFERENCES
+
+TensorFlow Lite model archive:
+https://storage.googleapis.com/download.tensorflow.org/models/tflite/coco_ssd_mobilenet_v1_1.0_quant_2018_06_29.zip
+
+Raspberry Pi camera documentation:
+https://www.raspberrypi.com/documentation/computers/camera_software.html
+
+Picamera2: https://github.com/raspberrypi/picamera2
+
+OpenCV: https://opencv.org/
+
+Flask: https://flask.palletsprojects.com/
+
+gpiozero: https://gpiozero.readthedocs.io/
+
+END OF GUIDE
