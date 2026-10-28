@@ -1,6 +1,5 @@
-## Appli-Smart
-Turns Appliance On/Off based on availability of person in the room
-# Person Detection and GPIO-Based Occupancy Control Using Raspberry Pi Zero 2 W
+
+# Appli-Smart: Person Detection and GPIO-Based Occupancy Control Using Raspberry Pi Zero 2 W
 
 A real-time computer vision project that detects people using an IMX219 camera and a TensorFlow Lite object detection model on the Raspberry Pi Zero 2 W. Based on the detection result, the system automatically controls a GPIO output and provides a live web dashboard for monitoring.
 
